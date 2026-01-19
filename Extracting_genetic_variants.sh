@@ -8,11 +8,6 @@ output_prefix="$(basename "$vcf_file" .vcf)"
 gene_list="LRRK2,PINK1,PARKN,VPS35,PARK7"
 rsid_csv="/Users/k.zoltowska/Documents/General_scripts/PD_variants.csv"   # CSV must contain column 'rsid'
 
-subset_for_region=false
-region_chr="12"
-region_from=40657638
-region_to=40713560
-
 genome_build="hg19"   # ANNOVAR uses hg19/hg38 notation
 
 # Paths for ANNOVAR reference database
@@ -21,27 +16,11 @@ annovar_db="/Users/k.zoltowska/Documents/software/annovar/humandb"   # update to
 vcf_tmp="vcf_tmp.vcf"
 vcf_clean="vcf_clean.vcf.gz"
 
-# Optional region subset
-
-if [ "$subset_for_region" = true ]; then
-    vcftools \
-      --vcf "$vcf_file" \
-      --chr "$region_chr" \
-      --from-bp "$region_from" \
-      --to-bp "$region_to" \
-      --recode \
-      --recode-INFO-all \
-      --out "${vcf_tmp%.vcf}"
-    vcf_input="${vcf_tmp%.vcf}.recode.vcf"
-else
-    vcf_input="$vcf_file"
-fi
-
 # Annotate with ANNOVAR
 annotated_prefix="${output_prefix}_annovar"
 
 echo "Annotating with ANNOVAR..."
-/Users/k.zoltowska/Documents/software/annovar/table_annovar.pl "$vcf_input" "$annovar_db" \
+/Users/k.zoltowska/Documents/software/annovar/table_annovar.pl "$vcf_file" "$annovar_db" \
     -buildver "$genome_build" \
     -out "$annotated_prefix" \
     -remove \
@@ -60,18 +39,14 @@ bcftools index "${annotated_vcf}.gz"
 echo "Filtering annotated VCF by gene list..."
 gene_vcf="${output_prefix}_gene_filtered.vcf"
 
-gene_expr=$(echo "$gene_list" | awk -F',' '{
-  for(i=1;i<=NF;i++){
-    printf "\''%s'\''", $i
-    if(i<NF){printf "|"}
-  }
-}')
+gene_expr=$(echo "$gene_list" | awk -F',' '{for(i=1;i<=NF;i++){printf "%s", $i; if(i<NF){printf "|"}}}')
+
 
 echo ${gene_expr}
 
 # Using bcftools + ANNOVAR INFO field
 bcftools view \
-  -i "INFO/Gene.refGene ~ \"(^|,)(${gene_expr})(,|$)\"" \
+  -i "INFO/Gene.refGene ~ '(${gene_expr})'" \
   "${annotated_vcf}.gz" -Oz -o "${gene_vcf}.gz"
 bcftools index "${gene_vcf}.gz"
 
