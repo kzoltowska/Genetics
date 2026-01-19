@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This script aims at extracting relevant SNPs from .vcf files and converting to genotype matrix
+
 # User-configurable inputs
 vcf_file="/Users/k.zoltowska/Documents/General_scripts/NEUROX_filtered.vcf"
 output_prefix="$(basename "$vcf_file" .vcf)"
@@ -10,17 +12,23 @@ rsid_csv="/Users/k.zoltowska/Documents/General_scripts/PD_variants.csv"   # CSV 
 
 genome_build="hg19"   # ANNOVAR uses hg19/hg38 notation
 
+# How to get the reference wget https://storage.googleapis.com/gatk-legacy-bundles/b37/human_g1k_v37.fasta.gz
+genome_fasta="/Users/k.zoltowska/Documents/software/annovar/b37/human_g1k_v37.fasta"
+
 # Paths for ANNOVAR reference database
 annovar_db="/Users/k.zoltowska/Documents/software/annovar/humandb"   # update to your humandb path
 
-vcf_tmp="vcf_tmp.vcf"
-vcf_clean="vcf_clean.vcf.gz"
+# Fix the vcf file
+bcftools annotate \
+  --rename-chrs <(echo -e "23\tX\n24\tY") \
+  ${vcf_file} -Oz -o ${output_prefix}_chrfixed.vcf.gz
+bcftools norm -f ${genome_fasta} -m -any --check-ref w ${output_prefix}_chrfixed.vcf.gz -Oz -o ${output_prefix}_normalized.vcf.gz # this will flip REF and ALT for the mismatch alleles, but is this safe...?xs
 
 # Annotate with ANNOVAR
 annotated_prefix="${output_prefix}_annovar"
 
 echo "Annotating with ANNOVAR..."
-/Users/k.zoltowska/Documents/software/annovar/table_annovar.pl "$vcf_file" "$annovar_db" \
+/Users/k.zoltowska/Documents/software/annovar/table_annovar.pl "${output_prefix}_normalized.vcf.gz" "$annovar_db" \
     -buildver "$genome_build" \
     -out "$annotated_prefix" \
     -remove \
@@ -35,18 +43,21 @@ bgzip -f "$annotated_vcf"
 bcftools index "${annotated_vcf}.gz"
 
 # Filter by gene list
-
 echo "Filtering annotated VCF by gene list..."
 gene_vcf="${output_prefix}_gene_filtered.vcf"
 
-gene_expr=$(echo "$gene_list" | awk -F',' '{for(i=1;i<=NF;i++){printf "%s", $i; if(i<NF){printf "|"}}}')
-
+gene_expr=$(echo "$gene_list" | awk -F',' '{
+  for (i=1; i<=NF; i++) {
+    printf "INFO/Gene.refGene==\"%s\"", $i
+    if (i < NF) printf " || "
+  }
+}')
 
 echo ${gene_expr}
 
 # Using bcftools + ANNOVAR INFO field
 bcftools view \
-  -i "INFO/Gene.refGene ~ '(${gene_expr})'" \
+  -i "${gene_expr}" \
   "${annotated_vcf}.gz" -Oz -o "${gene_vcf}.gz"
 bcftools index "${gene_vcf}.gz"
 
@@ -74,9 +85,6 @@ awk '{start=$2-1; if(start<0) start=0; end=$2; print $1"\t"start"\t"end}' rsid_p
 # Extract variants from annotated VCF
 bcftools view -R rsid_regions.txt "${annotated_vcf}.gz" -Oz -o "${rsid_vcf}.gz"
 bcftools index "${rsid_vcf}.gz"
-
-# Cleanup
-rm rsids.txt rsid_positions.txt rsid_regions.txt
 
 # Combine gene + rsID filtered VCFs (union, no duplicates)
 combined_vcf="${output_prefix}_protein_coding_combined.vcf.gz"
@@ -107,7 +115,6 @@ awk -F'\t' '
     print vid "_" $2 "_" $3 "_" $4
 }' > "${genotype_prefix}_variant_labels.txt"
 
-
 # Create TSV
 echo "Creating tsv"
 awk '{for(i=2;i<=NF;i++){if($i==-1)$i="NA"; printf "%s%s",$i,(i==NF?ORS:OFS)}}' \
@@ -116,7 +123,30 @@ OFS='\t' "${genotype_prefix}.012" > "${genotype_prefix}.012.clean"
 echo -e "Sample\t$(paste -sd'\t' "${genotype_prefix}_variant_labels.txt")" > "${genotype_prefix}.tsv"
 paste -d'\t' "${genotype_prefix}.012.indv" "${genotype_prefix}.012.clean" >> "${genotype_prefix}.tsv"
 
+# Cleanup: remove all intermediate files, keep only final TSV
+echo "Cleaning up intermediate files..."
 
-# Cleanup
+rm -f \
+  "${annotated_prefix}.hg19_multianno.vcf.gz" \
+  "${annotated_prefix}.hg19_multianno.vcf.gz.csi" \
+  "${gene_vcf}.gz" \
+  "${gene_vcf}.gz.csi" \
+  "${rsid_vcf}.gz" \
+  "${rsid_vcf}.gz.csi" \
+  "$combined_vcf" \
+  "$combined_vcf.csi" \
+  "${genotype_prefix}.012" \
+  "${genotype_prefix}.012.indv" \
+  "${genotype_prefix}.012.pos" \
+  "${genotype_prefix}.012.clean" \
+  "${output_prefix}_normalized.vcf.gz" \
+  "${output_prefix}_chrfixed.vcf.gz" \
+  "${output_prefix}_annovar*" \
+  "${genotype_prefix}_variant_labels.txt" \
+  rsids.txt \
+  rsid_positions.txt \
+  rsid_regions.txt
 
-echo "All done!"
+echo "All done! Final output:"
+echo "  ${genotype_prefix}.tsv"
+
